@@ -2,6 +2,14 @@
   "name": "express-rate-protect",
   "version": "1.1.2",
   "description": "Pluggable rate-limiting middleware for Express — token bucket & sliding window, in-memory or Redis-backed.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/akshitbhardwajhere/express-rate-protect.git"
+  },
+  "homepage": "https://github.com/akshitbhardwajhere/express-rate-protect#readme",
+  "bugs": {
+    "url": "https://github.com/akshitbhardwajhere/express-rate-protect/issues"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
