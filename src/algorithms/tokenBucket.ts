@@ -1,41 +1,55 @@
-import { RateLimiter, RateLimitResult, TokenBucketStore } from '../types';
+import { RateLimiter, RateLimitResult, TokenBucketStore } from "../types";
 
-export interface TokenBucketOptions {
+interface BaseTokenBucketOptions {
   /** max tokens the bucket can hold (i.e. burst size) */
   capacity: number;
-  /** tokens added per second */
-  refillPerSecond: number;
   store: TokenBucketStore;
 }
 
+export interface TokenBucketOptions extends BaseTokenBucketOptions {
+  /** interval between refills, in milliseconds */
+  refillTime: number;
+  /** tokens added at each refill interval */
+  refillTokens: number;
+}
+
 /**
- * Token bucket: allows bursts up to `capacity`, then throttles to a
- * steady `refillPerSecond` rate. Good default for APIs that want to
- * tolerate short spikes without hard-blocking every extra request.
+ * Token bucket: allows bursts up to `capacity`, then adds `refillTokens`
+ * after each `refillTime` interval.
  */
 export class TokenBucketLimiter implements RateLimiter {
   constructor(private opts: TokenBucketOptions) {}
 
   async check(key: string): Promise<RateLimitResult> {
-    const { capacity, refillPerSecond, store } = this.opts;
+    const { capacity, refillTime, refillTokens, store } = this.opts;
     const now = Date.now();
 
     const existing = await store.get(key);
     const last = existing?.lastRefill ?? now;
-    const elapsedSeconds = Math.max(0, (now - last) / 1000);
+    const elapsedMs = Math.max(0, now - last);
+    const refillCount = refillTime > 0 ? Math.floor(elapsedMs / refillTime) : 0;
+    const tokensAdded = refillCount * refillTokens;
 
-    const refilled = Math.min(capacity, (existing?.tokens ?? capacity) + elapsedSeconds * refillPerSecond);
+    const refilled = Math.min(
+      capacity,
+      (existing?.tokens ?? capacity) + tokensAdded,
+    );
+    const lastRefill = existing ? last + refillCount * refillTime : now;
 
     const allowed = refilled >= 1;
     const tokensAfter = allowed ? refilled - 1 : refilled;
 
-    // bucket state is only meaningful for `capacity / refillPerSecond` seconds
-    // after the last write, so TTL a little beyond a full refill cycle
-    const ttlMs = Math.ceil((capacity / refillPerSecond) * 1000) + 1000;
-    await store.set(key, { tokens: tokensAfter, lastRefill: now }, ttlMs);
+    // Keep state long enough for a depleted bucket to refill completely.
+    const ttlMs =
+      refillTime > 0 && refillTokens > 0
+        ? Math.ceil(capacity / refillTokens) * refillTime + 1000
+        : 60_000;
+    await store.set(key, { tokens: tokensAfter, lastRefill }, ttlMs);
 
-    const missingTokens = Math.max(0, 1 - refilled);
-    const retryAfterMs = allowed ? 0 : Math.ceil((missingTokens / refillPerSecond) * 1000);
+    const retryAfterMs =
+      allowed || refillTime <= 0 || refillTokens <= 0
+        ? 0
+        : Math.max(0, refillTime - (now - lastRefill));
 
     return {
       allowed,

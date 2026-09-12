@@ -24,11 +24,11 @@ executes. If not, the request passes through normally.
 ### Token Bucket
 
 Each client has a virtual "bucket" holding up to `capacity` tokens. Every
-request consumes one token. Tokens regenerate continuously at a fixed
-rate (`refillPerSecond`), up to the bucket's capacity.
+request consumes one token. Every `refillTime` milliseconds, exactly
+`refillTokens` are added, up to the bucket's capacity.
 
 ```
-capacity: 5, refillPerSecond: 1
+capacity: 5, refillTime: 1000, refillTokens: 1
 
 t=0s   → 5 requests fire instantly → all allowed (bucket: 5 → 0)
 t=0s   → 6th request               → rejected (0 tokens available)
@@ -36,8 +36,9 @@ t=1s   → 1 token has regenerated   → 1 request allowed
 ```
 
 **Characteristics:**
-- Allows short bursts up to `capacity`, then enforces a steady-state rate
-  of `refillPerSecond`.
+
+- Allows short bursts up to `capacity`, then adds `refillTokens` at each
+  `refillTime` interval.
 - O(1) storage per client — just `{ tokens, lastRefill }`.
 - Good fit for public APIs where traffic is naturally bursty (page loads
   firing several requests at once) but you still want to cap sustained
@@ -60,6 +61,7 @@ t=11s → request 5 → allowed (t=0 timestamp is now >10s old, pruned)
 ```
 
 **Characteristics:**
+
 - Exact enforcement over any rolling window — no boundary effects like
   fixed-window counters have (where a client could send `2 × limit`
   requests by timing them around a window edge).
@@ -100,18 +102,21 @@ Redis-backed as soon as you run more than one instance of the app.
 composes exactly the way any other middleware does.
 
 **Global — every route shares one limiter:**
+
 ```ts
 app.use(rateLimit({ limiter }));
 ```
 
 **Single route:**
+
 ```ts
-app.get('/api/search', rateLimit({ limiter: searchLimiter }), searchHandler);
+app.get("/api/search", rateLimit({ limiter: searchLimiter }), searchHandler);
 ```
 
 **Path prefix — a group of routes:**
+
 ```ts
-app.use('/api/', rateLimit({ limiter }));
+app.use("/api/", rateLimit({ limiter }));
 ```
 
 **Per-route limiters with different rules — the common production
@@ -121,18 +126,24 @@ than public read endpoints, since they're a brute-force target:
 ```ts
 const strictLimiter = new TokenBucketLimiter({
   capacity: 3,
-  refillPerSecond: 0.1, // effectively ~1 request per 10s after the burst
+  refillTime: 10_000,
+  refillTokens: 1, // one token every 10s after the burst
   store: new MemoryTokenBucketStore(),
 });
 
 const relaxedLimiter = new TokenBucketLimiter({
   capacity: 100,
-  refillPerSecond: 5,
+  refillTime: 1000,
+  refillTokens: 5,
   store: new MemoryTokenBucketStore(),
 });
 
-app.post('/api/login', rateLimit({ limiter: strictLimiter }), loginHandler);
-app.get('/api/products', rateLimit({ limiter: relaxedLimiter }), productsHandler);
+app.post("/api/login", rateLimit({ limiter: strictLimiter }), loginHandler);
+app.get(
+  "/api/products",
+  rateLimit({ limiter: relaxedLimiter }),
+  productsHandler,
+);
 ```
 
 Each `Limiter` instance maintains isolated state. Two routes sharing the
@@ -150,14 +161,19 @@ npm install ioredis
 ## Quick start — single instance, token bucket
 
 ```ts
-import express from 'express';
-import { rateLimit, TokenBucketLimiter, MemoryTokenBucketStore } from 'express-rate-protect';
+import express from "express";
+import {
+  rateLimit,
+  TokenBucketLimiter,
+  MemoryTokenBucketStore,
+} from "express-rate-protect";
 
 const app = express();
 
 const limiter = new TokenBucketLimiter({
   capacity: 5,
-  refillPerSecond: 1,
+  refillTime: 1000,
+  refillTokens: 1,
   store: new MemoryTokenBucketStore(),
 });
 
@@ -167,8 +183,12 @@ app.use(rateLimit({ limiter }));
 ## Quick start — horizontally scaled, sliding window over Redis
 
 ```ts
-import Redis from 'ioredis';
-import { rateLimit, SlidingWindowLimiter, RedisSlidingWindowStore } from 'express-rate-protect';
+import Redis from "ioredis";
+import {
+  rateLimit,
+  SlidingWindowLimiter,
+  RedisSlidingWindowStore,
+} from "express-rate-protect";
 
 const redis = new Redis(process.env.REDIS_URL);
 
@@ -181,8 +201,8 @@ const limiter = new SlidingWindowLimiter({
 app.use(
   rateLimit({
     limiter,
-    keyGenerator: (req) => req.header('x-api-key') ?? req.ip ?? 'anonymous',
-  })
+    keyGenerator: (req) => req.header("x-api-key") ?? req.ip ?? "anonymous",
+  }),
 );
 ```
 
@@ -190,12 +210,12 @@ app.use(
 
 ### `rateLimit(options)`
 
-| Option | Type | Description |
-|---|---|---|
-| `limiter` | `RateLimiter` | A `TokenBucketLimiter` or `SlidingWindowLimiter` instance |
-| `keyGenerator` | `(req) => string` | Derives the identity to rate-limit on. Defaults to `req.ip`. Use a user ID or API key for per-account limits instead of per-IP. |
-| `skip` | `(req) => boolean` | Return `true` to bypass the check entirely (e.g. health-check routes) |
-| `onLimitExceeded` | `(req, res, retryAfterMs) => void` | Override the default `429` JSON response with custom handling |
+| Option            | Type                               | Description                                                                                                                     |
+| ----------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `limiter`         | `RateLimiter`                      | A `TokenBucketLimiter` or `SlidingWindowLimiter` instance                                                                       |
+| `keyGenerator`    | `(req) => string`                  | Derives the identity to rate-limit on. Defaults to `req.ip`. Use a user ID or API key for per-account limits instead of per-IP. |
+| `skip`            | `(req) => boolean`                 | Return `true` to bypass the check entirely (e.g. health-check routes)                                                           |
+| `onLimitExceeded` | `(req, res, retryAfterMs) => void` | Override the default `429` JSON response with custom handling                                                                   |
 
 Every response — allowed or not — includes `X-RateLimit-Limit` and
 `X-RateLimit-Remaining`. Rejected responses additionally include
