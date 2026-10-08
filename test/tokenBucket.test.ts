@@ -84,4 +84,19 @@ describe("TokenBucketLimiter", () => {
     expect(a1.allowed).toBe(true);
     expect(b1.allowed).toBe(true);
   });
+
+  it("consumes tokens atomically for concurrent requests", async () => {
+    const limiter = new TokenBucketLimiter({
+      capacity: 3,
+      refillTime: 1000,
+      refillTokens: 0,
+      store: new MemoryTokenBucketStore(),
+    });
+
+    const results = await Promise.all(
+      Array.from({ length: 20 }, () => limiter.check("concurrent-user")),
+    );
+
+    expect(results.filter((result) => result.allowed)).toHaveLength(3);
+  });
 });

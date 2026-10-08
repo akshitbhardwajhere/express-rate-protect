@@ -16,10 +16,28 @@ export interface BucketState {
   lastRefill: number; // epoch ms
 }
 
+export interface TokenBucketConsumeOptions {
+  capacity: number;
+  refillTime: number;
+  refillTokens: number;
+  ttlMs: number;
+}
+
+export interface TokenBucketConsumeResult {
+  state: BucketState;
+  allowed: boolean;
+}
+
 /** Storage backend for the token bucket algorithm */
 export interface TokenBucketStore {
   get(key: string): Promise<BucketState | undefined>;
   set(key: string, state: BucketState, ttlMs: number): Promise<void>;
+  /** Atomically refill and consume one token when supported by the store. */
+  consume?(
+    key: string,
+    now: number,
+    options: TokenBucketConsumeOptions,
+  ): Promise<TokenBucketConsumeResult>;
 }
 
 /** Storage backend for the sliding-window-log algorithm */

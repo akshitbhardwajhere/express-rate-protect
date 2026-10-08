@@ -24,27 +24,42 @@ export class TokenBucketLimiter implements RateLimiter {
     const { capacity, refillTime, refillTokens, store } = this.opts;
     const now = Date.now();
 
-    const existing = await store.get(key);
-    const last = existing?.lastRefill ?? now;
-    const elapsedMs = Math.max(0, now - last);
-    const refillCount = refillTime > 0 ? Math.floor(elapsedMs / refillTime) : 0;
-    const tokensAdded = refillCount * refillTokens;
-
-    const refilled = Math.min(
-      capacity,
-      (existing?.tokens ?? capacity) + tokensAdded,
-    );
-    const lastRefill = existing ? last + refillCount * refillTime : now;
-
-    const allowed = refilled >= 1;
-    const tokensAfter = allowed ? refilled - 1 : refilled;
-
     // Keep state long enough for a depleted bucket to refill completely.
     const ttlMs =
       refillTime > 0 && refillTokens > 0
         ? Math.ceil(capacity / refillTokens) * refillTime + 1000
         : 60_000;
-    await store.set(key, { tokens: tokensAfter, lastRefill }, ttlMs);
+
+    let allowed: boolean;
+    let tokensAfter: number;
+    let lastRefill: number;
+
+    if (store.consume) {
+      const result = await store.consume(key, now, {
+        capacity,
+        refillTime,
+        refillTokens,
+        ttlMs,
+      });
+      allowed = result.allowed;
+      tokensAfter = result.state.tokens;
+      lastRefill = result.state.lastRefill;
+    } else {
+      const existing = await store.get(key);
+      const last = existing?.lastRefill ?? now;
+      const elapsedMs = Math.max(0, now - last);
+      const refillCount =
+        refillTime > 0 ? Math.floor(elapsedMs / refillTime) : 0;
+      const tokensAdded = refillCount * refillTokens;
+      const refilled = Math.min(
+        capacity,
+        (existing?.tokens ?? capacity) + tokensAdded,
+      );
+      lastRefill = existing ? last + refillCount * refillTime : now;
+      allowed = refilled >= 1;
+      tokensAfter = allowed ? refilled - 1 : refilled;
+      await store.set(key, { tokens: tokensAfter, lastRefill }, ttlMs);
+    }
 
     const retryAfterMs =
       allowed || refillTime <= 0 || refillTokens <= 0

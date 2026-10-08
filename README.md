@@ -231,6 +231,13 @@ Every response — allowed or not — includes `X-RateLimit-Limit` and
 - **Storage is abstracted behind small interfaces** (`TokenBucketStore`,
   `SlidingWindowStore`), so a different backend (Postgres, DynamoDB, etc.)
   can be implemented without touching the algorithm logic.
+- **State transitions are atomic in the built-in stores.** Memory stores
+  update state synchronously, while Redis stores use Lua scripts so token
+  refill/consume and sliding-window prune/record/count cannot race across
+  application instances. Custom token-bucket stores should implement the
+  optional atomic `consume` operation; stores that only implement `get` and
+  `set` retain the compatibility fallback but do not provide concurrency
+  guarantees.
 - **The sliding window's Redis implementation uses a ZSET** with the
   timestamp as score, pruned via `ZREMRANGEBYSCORE` on every request —
   avoiding unbounded growth of stored history.
